@@ -1,0 +1,19 @@
+[theme]
+# The primary color of the app (Orange)
+primaryColor = "#FF6740"
+
+# The background color of the main content area (Deep Grey)
+backgroundColor = "#191A23"
+
+# The background color of the sidebar (Lighter Grey)
+secondaryBackgroundColor = "#242634"
+
+# The color of the text
+textColor = "#FAFAFA"
+
+# Font family
+font = "sans serif"
+
+[server]
+# Helpful for development, removes the "Email" prompt
+headless = true

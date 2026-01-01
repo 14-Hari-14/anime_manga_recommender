@@ -1,0 +1,18 @@
+scripts/original_anime_csv_creation.py
+scripts/original_manga_csv_creation.py
+scripts/tempCodeRunnerFile.py
+
+
+# --- Python Basics ---
+__pycache__/
+*.pyc
+venv/
+.env
+
+data/
+
+.~lock.*
+
+# --- IDE Settings ---
+.vscode/
+.idea/
