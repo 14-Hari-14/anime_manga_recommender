@@ -108,7 +108,8 @@ if st.button("Get Recommendations"):
         "banned_tags": banned_tags,
         "viewer_descretion": view_desc,
         "demographic": demo,
-        "allow_nsfw": st.session_state.nsfw_toggle
+        # the frontend and backend didnt share the same variable name so this caused it to always be false
+        "nsfw_allowed": st.session_state.nsfw_toggle
     }
     
     print("nsfw state: ", st.session_state.nsfw_toggle)
