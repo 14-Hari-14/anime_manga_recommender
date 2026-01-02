@@ -48,7 +48,7 @@ Streamlit-based web interface for user interaction with the recommendation syste
 
 ### `/data`
 
-Contains all data assets and trained models.
+Contains all data assets and trained models. This wont be present in the github due to file size limitation. This can be generated using the files in the repository and the instructions to do so are provided in the next section.
 
 **Structure:**
 
