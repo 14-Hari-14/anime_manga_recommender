@@ -28,7 +28,8 @@ GENRE_TAGS_CONFIRMED = [
 
 THEME_TAGS_CONFIRMED = [
     "Aliens",
-    "Animals",              
+    "Animals",  
+    "Boys Love",
     "Cooking",
     "Crossdressing",
     "Crossover",            
@@ -62,6 +63,7 @@ THEME_TAGS_CONFIRMED = [
     "Video Game Industry",  
     "Villainess",
     "Virtual Reality",
+    "Yuri",            
     "Zombies"
 ]
 
@@ -74,6 +76,4 @@ GENDER_SPECIFIC_TAGS = [
     "Shounen",
     "Josei",
     "Seinen",
-    "Boys' Love (BL/Yaoi)",
-    "Girls' Love (GL/Yuri)"
 ]

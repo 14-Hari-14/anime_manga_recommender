@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Set
+import base64
 
 class ReRanker:
     def __init__(self):
@@ -18,7 +19,7 @@ class ReRanker:
             return 0.5
         return (value - min_val) / (max_val - min_val)
 
-    def ranker(self, candidates: List[Dict[str, Any]], hard_filters: Set[str], banned_filters: Set[str], soft_filters: Set[str]) -> List[Dict[str, Any]]:
+    def ranker(self, candidates: List[Dict[str, Any]], hard_filters: Set[str], banned_user_filters: Set[str], nsfw_allowed: bool, soft_filters: Set[str]) -> List[Dict[str, Any]]:
         if not candidates:
             return []
 
@@ -28,6 +29,12 @@ class ReRanker:
         
         min_score, max_score = (min(scores), max(scores)) if scores else (0, 10)
         min_pop, max_pop = (min(pops), max(pops)) if pops else (0, 100)
+        
+        if not nsfw_allowed:
+            banned_tags_encoded = ['TnVkaXR5','UmFwZQ==','SW5jZXN0','TmV0b3JhcmU=','TmV0b3Jhc2U=','TmV0b3Jp','RXJvIEd1cm8=','Qm9uZGFnZQ==','U2V4dWFsIFZpb2xlbmNl','U2V4IFRveXM=','Vm95ZXVy','RXhoaWJpdGlvbmlzbQ==','QkRTTQ==','TG9saWNvbg==','U2hvdGFjb24=', 'QW5hbCBTZXg=', 'TmFrYWRhc2hp','UHVibGljIFNleA==','RGVmbG9yYXRpb24=','VmlyZ2luaXR5', 'TUlMRg==','TGFyZ2UgQnJlYXN0cw==','VGhyZWVzb21l']
+            banned_tags_decoded = [base64.b64decode(t).decode("utf-8").lower() for t in banned_tags_encoded]
+        else:
+            banned_tags_decoded = []
 
         for item in candidates:
             # Prepare Item Tags (Tags + Genres combined)
@@ -41,8 +48,14 @@ class ReRanker:
                     item['rerank_score'] = -1.0 # Disqualified
                     continue
             # enforcing banned filters to disqualify items containing any banned tags
-            if banned_filters:
-                if banned_filters.intersection(item_tags):
+            if banned_user_filters:
+                if banned_user_filters.intersection(item_tags):
+                    item['rerank_score'] = -1.0 # Disqualified
+                    continue
+            
+            # enforcing self banned tags to dsiqualify items containing any nsfw tags
+            if banned_tags_decoded:
+                if set(banned_tags_decoded).intersection(item_tags):
                     item['rerank_score'] = -1.0 # Disqualified
                     continue
 

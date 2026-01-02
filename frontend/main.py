@@ -82,6 +82,9 @@ with st.sidebar:
     st.subheader("Other")
     view_desc = st.multiselect("Viewer Discretion", CONTENT_WARNINGS_CONFIRMED)
     demo = st.multiselect("Demographic", GENDER_SPECIFIC_TAGS)
+    
+    st.toggle("Allow NSFW Content", key="nsfw_toggle")
+    st.markdown("Note: Turning this on might include 18+ content in the recommendations.")
 
 # main input area
 query = st.text_input(
@@ -104,8 +107,11 @@ if st.button("Get Recommendations"):
         "soft_limit": soft_limit,
         "banned_tags": banned_tags,
         "viewer_descretion": view_desc,
-        "demographic": demo
+        "demographic": demo,
+        "allow_nsfw": st.session_state.nsfw_toggle
     }
+    
+    print("nsfw state: ", st.session_state.nsfw_toggle)
 
     with st.spinner("Analyzing vectors & reranking results..."):
         try:
@@ -141,7 +147,7 @@ if st.button("Get Recommendations"):
             # Create tags HTML
             tags_html = "".join([
                 f'<span style="background-color: #242634; color: #EEE; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; margin-right: 6px;">{t}</span>' 
-                for t in sorted(item.get("tags", [])[:6])
+                for t in sorted(item.get("tags", []))
             ])
 
             

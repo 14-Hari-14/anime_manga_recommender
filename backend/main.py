@@ -27,11 +27,12 @@ class RecommendationRequest(BaseModel):
     genre: List[str] = []
     viewer_descretion: List[str] = []
     demographic: List[str] = []
+    nsfw_allowed: bool = False
 
 # Response schema (format for data to be sent back)
 class RecommendationItem(BaseModel):
     title: str
-    description: str
+    description: str | None
     tags: List[str]
     genres: List[str]
     average_score: float | None
@@ -150,7 +151,8 @@ def recommend(req: RecommendationRequest):
         candidates=reranker_input, 
         hard_filters=hard_tags_set, 
         soft_filters=soft_tags_set,
-        banned_filters=banned_tags_set
+        banned_user_filters=banned_tags_set,
+        nsfw_allowed=req.nsfw_allowed
     )
     
     # filtering out scores with -1 since they are disqualified by hard filters
