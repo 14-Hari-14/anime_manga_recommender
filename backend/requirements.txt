@@ -1,0 +1,20 @@
+# backend/requirements.txt
+
+# API Server
+fastapi
+uvicorn
+pydantic
+
+# ML & Logic (The heavy stuff)
+sentence-transformers
+faiss-cpu
+torch
+scipy
+scikit-learn
+
+# Data Handling
+pandas
+numpy
+
+# External APIs (AniList)
+requests
