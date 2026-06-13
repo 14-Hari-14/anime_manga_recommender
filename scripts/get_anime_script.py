@@ -4,40 +4,101 @@ import time
 import os
 
 ANILIST_URL = "https://graphql.anilist.co"
-OUTPUT_FILE = "anime.csv"
-PROGRESS_FILE = "anime_progress.txt"
+OUTPUT_FILE_ANIME = "anime.csv"
+OUTPUT_FILE_MANGA = "manga.csv"
+OUTPUT_FILE_MANHWA = "manhwa.csv"
+OUTPUT_FILE_MANHUA = "manhua.csv"
 
+# The difference in output file and progress file is because 
+# anilist segregates data on the basis of anime and manga 
+# and there are no special categories for manhua or manhwa 
+# so i would have to separate them based on country of origin
+
+PROGRESS_FILE_ANIME = "anime_progress.txt"
+PROGRESS_FILE_MANGA = "manga_progress.txt"
+
+# Headers to be written for files
+CSV_HEADERS = [
+	"id",
+	"bucket",
+	"media_type",
+	"title",
+	"native_title",
+	"description",
+	"country_of_origin",
+	"format",
+	"status",
+	"year",
+	"average_score",
+	"popularity",
+	"genres",
+	"tags",
+	"synonyms",
+	"relations",
+	"image_url",
+	"is_adult",
+]
+
+# modifying description asHtml argument as false to reduce the amount of cleaning required for descriptions
+# relation has edges(relationType) -> to show prequel sequels ova and node is the datatype which describes any title
+# countryOfOrigin: to separate manga, manhwa and manhua for better filtering
 QUERY = """
-query ($page: Int, $perPage: Int) {
+query ($page: Int, $perPage: Int, $mediaType: MediaType!) {
   Page(page: $page, perPage: $perPage) {
-    pageInfo {
-      hasNextPage
-      currentPage
-    }
-    media(type: ANIME) {
-      id
-      title {
-        romaji
-        english
-      }
-      description
-      genres
-      tags {
-        name
-        rank
-      }
-      coverImage {
-        extraLarge
-      }
-      averageScore
-      popularity
-      startDate {
-        year
-      }
-    }
+	pageInfo {
+	  hasNextPage
+	  currentPage
+	}
+	media(type: $mediaType) {
+	  id
+	  type
+	  title {
+		romaji
+		english
+		native
+	  }
+	  description(asHtml: false) 
+	  countryOfOrigin
+	  format
+	  status
+	  genres
+	  synonyms
+	  tags {
+		name
+		rank
+	  }
+	  relations {
+		edges {
+		  relationType
+		  node {
+			id
+			type
+			countryOfOrigin
+			format
+			status
+			title {
+			  romaji
+			  english
+			  native
+			}
+			siteUrl
+		  }
+		}
+	  }
+	  coverImage {
+		extraLarge
+	  }
+	  averageScore
+	  popularity
+	  startDate {
+		year
+	  }
+	  isAdult
+	}
   }
 }
 """
+
 
 def load_last_page():
     if os.path.exists(PROGRESS_FILE):
