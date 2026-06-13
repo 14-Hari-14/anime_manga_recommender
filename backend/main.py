@@ -119,13 +119,17 @@ def recommend(req: RecommendationRequest):
 
     # preparing data to be sent to reranker
     reranker_input = []
-    # hard tags are must have, ids without these will be filtered out
-    hard_tags_set = {t.strip().lower() for t in req.hard_limit}
+    
     # banned tags are must not have sets, ids with these will be filtered out
     banned_tags_set = {t.strip().lower() for t in req.banned_tags}
+    
+    # hard tags are must have, ids without these will be filtered out
+    hard_tags_set = set(req.hard_limit + req.genre)
+    hard_tags_set = {t.strip().lower() for t in hard_tags_set}
+    
 
     # combine soft tags with genres and demographic tags, ids without these will get penalized but not filtered out
-    soft_tags_set = set(req.soft_limit + req.genre + req.demographic)
+    soft_tags_set = set(req.soft_limit + req.demographic)
     soft_tags_set = {t.strip().lower() for t in soft_tags_set}
     
     

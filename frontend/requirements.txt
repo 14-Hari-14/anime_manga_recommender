@@ -1,0 +1,11 @@
+# frontend/requirements.txt
+
+# UI
+streamlit
+
+# Networking
+requests
+
+# Data Display
+pandas
+numpy

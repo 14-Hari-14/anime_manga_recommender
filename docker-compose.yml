@@ -1,0 +1,27 @@
+services:
+  # --- Service 1: The Backend ---
+  backend:
+    build:
+      context: .              # Look in the root folder for files
+      dockerfile: backend/Dockerfile
+    container_name: manga-backend
+    ports:
+      - "8000:8000"           # Open port 8000 to your computer
+    volumes:
+      - ./data:/app/data      # <--- MAGIC: "Mount" your local data folder into the container
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  # --- Service 2: The Frontend ---
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: manga-frontend
+    ports:
+      - "8501:8501"           # Open port 8501 to your computer
+    environment:
+      # Tell Streamlit: "The backend is NOT at localhost. It is at 'http://backend:8000'"
+      - BACKEND_URL=http://backend:8000 
+    depends_on:
+      - backend               # Wait for backend to start before starting frontend

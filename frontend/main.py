@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import os
 
 # imports the list of filter tags from config_public
 from config_public import (
@@ -12,6 +13,8 @@ from config_public import (
 
 # custom styling
 st.set_page_config(page_title="Manga Recommender", layout="wide")
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 def set_custom_style():
     st.markdown("""
@@ -117,7 +120,7 @@ if st.button("Get Recommendations"):
     with st.spinner("Analyzing vectors & reranking results..."):
         try:
             response = requests.post(
-                "http://localhost:8000/recommend",
+                f"{BACKEND_URL}/recommend",
                 json=payload,
                 timeout=10
             )
