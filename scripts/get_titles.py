@@ -1,7 +1,8 @@
+# This script is used to query Anilist API for the anime and manga titles and create a csv
 import requests
 import csv
 import time
-import os
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Dict
 import json
@@ -10,6 +11,10 @@ ANILIST_URL = "https://graphql.anilist.co"
 BASE_DIR = Path(__file__).resolve().parent
 
 OUTPUT_FILE= BASE_DIR.parent / "data" / "raw_data.csv"
+
+# the paging limit of 5000 was crashing the script so i switched over to time based sharding 
+START_DATE = date(1950, 1, 1)
+END_DATE = date(2026, 12, 31)
 
 # The difference in output file and progress file is because 
 # anilist segregates data on the basis of anime and manga 
@@ -45,13 +50,13 @@ CSV_HEADERS = [
 # relation has edges(relationType) -> to show prequel sequels ova and node is the datatype which describes any title
 # countryOfOrigin: to separate manga, manhwa and manhua for better filtering
 QUERY = """
-query ($page: Int, $perPage: Int, $mediaType: MediaType!) {
+query ($page: Int, $perPage: Int, $mediaType: MediaType!, $startDateGreater: FuzzyDateInt, $startDateLesser: FuzzyDateInt) {
   Page(page: $page, perPage: $perPage) {
 	pageInfo {
 	  hasNextPage
 	  currentPage
 	}
-	media(type: $mediaType) {
+	media(type: $mediaType, startDate_greater: $startDateGreater, startDate_lesser: $startDateLesser) {
 	  id
 	  type
 	  title {
@@ -105,19 +110,76 @@ query ($page: Int, $perPage: Int, $mediaType: MediaType!) {
 def ensure_parent_dir(path: Path) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True) # dont raise error if the dir already exists
 
-
-# Retrieve the value from progress file if it exists or return 1 as start
-def load_last_page(progress_file: Path) -> int:
-	if progress_file.exists():
-		raw_value = progress_file.read_text(encoding="utf-8").strip()
-		if raw_value:
-			return int(raw_value)
-	return 1
-
-# Overwrite the previous value to store the current page value
-def save_progress(progress_file: Path, page: int) -> None:
+# Serializes the queue of pending date ranges to the progress file in JSON format.
+def save_progress(progress_file: Path, pending_list: list[dict[str, Any]]) -> None:
 	ensure_parent_dir(progress_file)
-	progress_file.write_text(str(page), encoding="utf-8")
+	serialized = []
+	for item in pending_list:
+		serialized.append({
+			"start": item["start"].isoformat(),
+			"end": item["end"].isoformat(),
+			"page": item.get("page", 1)
+		})
+	progress_file.write_text(json.dumps(serialized, indent=2), encoding="utf-8")
+
+
+# Loads the pending date ranges from the progress file, supporting legacy comma-separated formats for backwards compatibility.
+def load_progress(progress_file: Path) -> list[dict[str, Any]]:
+	if progress_file.exists():
+		raw_content = progress_file.read_text(encoding="utf-8").strip()
+		if raw_content:
+			try:
+				# Try loading as JSON list (new format)
+				data = json.loads(raw_content)
+				if isinstance(data, list):
+					parsed = []
+					for item in data:
+						parsed.append({
+							"start": date.fromisoformat(item["start"]),
+							"end": date.fromisoformat(item["end"]),
+							"page": item.get("page", 1)
+						})
+					return parsed
+			except json.JSONDecodeError:
+				pass
+
+			# Fallback/Backward compatibility for legacy format
+			if "," in raw_content:
+				first, second = raw_content.split(",", 1)
+				if len(first) == 4 and first.isdigit() and second.isdigit():
+					year = int(first)
+					return [{"start": date(year, 1, 1), "end": date(year, 12, 31), "page": 1}]
+				return [{"start": date.fromisoformat(first), "end": date.fromisoformat(second), "page": 1}]
+			elif len(raw_content) == 4 and raw_content.isdigit():
+				year = int(raw_content)
+				return [{"start": date(year, 1, 1), "end": date(year, 12, 31), "page": 1}]
+
+	return [{"start": START_DATE, "end": END_DATE, "page": 1}]
+
+
+# Converts a date object to an integer in YYYYMMDD format expected by the AniList API.
+def date_to_fuzzy_int(value: date) -> int:
+	return int(value.strftime("%Y%m%d"))
+
+
+# Splits a date range in half, returning two adjacent date ranges for sharding.
+def split_date_range(start_value: date, end_value: date) -> tuple[date, date] | None:
+	if start_value >= end_value:
+		return None
+
+	middle = start_value + timedelta(days=(end_value - start_value).days // 2)
+	left_end = middle
+	right_start = middle + timedelta(days=1)
+
+	if left_end < start_value or right_start > end_value or left_end >= right_start:
+		return None
+
+	return left_end, right_start
+
+
+# Checks if an API error is due to requesting a page beyond the maximum depth of 5000 entries.
+def is_page_depth_error(error: Exception) -> bool:
+	return "Page depth exceeds maximum allowed for API requests (5000 entries)" in str(error)
 
 
 # To clean and get the description into a unified format
@@ -188,6 +250,7 @@ def classify_bucket(media: Dict[str, Any]) -> str:
 	return "manga"
 
 
+# Maps raw AniList API media fields to a structured flat dictionary representing a single CSV row.
 def build_row(media: Dict[str, Any]) -> Dict[str, Any]:
 	title, native_title = select_title(media.get("title"))
 	image_url = (media.get("coverImage") or {}).get("extraLarge") or "NA"
@@ -271,51 +334,83 @@ def post_graphql(session: requests.Session, variables: Dict[str, Any], max_retri
 
     raise last_error or RuntimeError("AniList request failed")
 
-def open_writer(path: Path) -> tuple[Any, csv.DictWriter]:
-	ensure_parent_dir(path)
-	file_handle = path.open("a", newline="", encoding="utf-8")
-	writer = csv.DictWriter(file_handle, fieldnames=CSV_HEADERS)
-
-	if path.stat().st_size == 0:
-		writer.writeheader()
-
-	return file_handle, writer
-
-#Fetches all pages for a single media type and writes to the unified writer.
+# Iteratively processes the queue of pending date ranges, buffering pages in memory and writing to CSV only on successful completion of a range.
 def ingest_media_by_type(session: requests.Session, writer: csv.DictWriter, media_type: str, progress_file: Path, per_page: int = 50) -> None:
-    
-    page = load_last_page(progress_file)
-    print(f"Starting ingestion for {media_type} from page {page}...")
+	pending = load_progress(progress_file)
 
-    while True:
-        variables = {
-            "page": page,
-            "perPage": per_page,
-            "mediaType": media_type
-        }
+	# Ensure progress is stored in new format immediately on load
+	save_progress(progress_file, pending)
 
-        # calling function to communicate with the api
-        page_data = post_graphql(session, variables)["data"]["Page"]
-        media_items = page_data["media"] or []
+	while pending:
+		# Peek at the current active range
+		current = pending[0]
+		start_value = current["start"]
+		end_value = current["end"]
+		page = current.get("page", 1)
 
-        if not media_items:
-            print(f"No more data returned for {media_type}.")
-            break
+		print(f"Processing {media_type} range {start_value} to {end_value} starting from page {page}...")
 
-        for media in media_items:
-            row = build_row(media)
-            writer.writerow(row)
+		range_failed_depth = False
+		buffer = []
+		while True:
+			# Subtracting 1 day and adding 1 day makes the query boundaries inclusive,
+			# since AniList's API greater/lesser filters are exclusive.
+			variables = {
+				"page": page,
+				"perPage": per_page,
+				"mediaType": media_type,
+				"startDateGreater": date_to_fuzzy_int(start_value - timedelta(days=1)),
+				"startDateLesser": date_to_fuzzy_int(end_value + timedelta(days=1)),
+			}
 
-        print(f"Successfully processed page {page} for {media_type}")
-        save_progress(progress_file, page)
+			try:
+				page_data = post_graphql(session, variables)["data"]["Page"]
+			except (requests.HTTPError, RuntimeError) as error:
+				if is_page_depth_error(error):
+					range_failed_depth = True
+					break
+				raise
 
-        if not page_data["pageInfo"]["hasNextPage"]:
-            print(f"Reached final page for {media_type}.")
-            break
+			media_items = page_data["media"] or []
+			if not media_items:
+				break
 
-        page += 1
-        time.sleep(2.2)  # anilist api mentioned keeping request rate 30 per minute
-		
+			for media in media_items:
+				row = build_row(media)
+				buffer.append(row)
+
+			print(f"Successfully processed page {page} for {media_type} shard {start_value} to {end_value}")
+
+			page += 1
+			current["page"] = page
+			save_progress(progress_file, pending)
+
+			if not page_data["pageInfo"]["hasNextPage"]:
+				break
+
+			time.sleep(2.2)
+
+		if range_failed_depth:
+			split_window = split_date_range(start_value, end_value)
+			if split_window is None:
+				raise RuntimeError(f"Cannot split date range further: {start_value} to {end_value}")
+
+			left_end, right_start = split_window
+			print(f"Splitting {media_type} shard {start_value} to {end_value} into {start_value} to {left_end} and {right_start} to {end_value}")
+
+			# Remove the current range, insert the split halves to the front of the queue, and save progress
+			pending.pop(0)
+			pending.insert(0, {"start": right_start, "end": end_value, "page": 1})
+			pending.insert(0, {"start": start_value, "end": left_end, "page": 1})
+			save_progress(progress_file, pending)
+		else:
+			print(f"Completed {media_type} range {start_value} to {end_value} successfully! Writing {len(buffer)} items to CSV.")
+			for row in buffer:
+				writer.writerow(row)
+			pending.pop(0)
+			save_progress(progress_file, pending)
+            
+# Coordinates the ingestion process by initializing the HTTP session, CSV writer, and calling the type-specific ingestion.
 def ingest_all() -> None:
     ensure_parent_dir(OUTPUT_FILE)
     file_exists = OUTPUT_FILE.exists() and OUTPUT_FILE.stat().st_size > 0
