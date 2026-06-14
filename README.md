@@ -14,10 +14,10 @@ A sophisticated recommendation engine that leverages vector embeddings and seman
 ## Things to work on
 TODO
 
-[] fix the anilist api to have dynamic rate limiting / exponential back off , properly handle pagination and other probles that may occur when calling the api (DONE)
-[] Implement a git diff kind of system to improve the pipeline of adding new titles to the database 
-[] implement a cron job or some other kind of scheduling system to add new data from the api to the database 
-[] improve the ranking and semantic retrieval search right now sometimes the user describes a similar type of plot but because the words dont match exactly we dont get those as recommendation one example is while searching for a world with little to almost no male population I am able to get mangas like chastity reversed world but not titles like world end harem its only when the title is added to the user prompt that world end harem shows up in the list but that defeats the point of a recommendation engine right 
+- fix the anilist api to have dynamic rate limiting / exponential back off , properly handle pagination and other probles that may occur when calling the api (DONE)
+- Implement a git diff kind of system to improve the pipeline of adding new titles to the database 
+- implement a cron job or some other kind of scheduling system to add new data from the api to the database 
+- improve the ranking and semantic retrieval search right now sometimes the user describes a similar type of plot but because the words dont match exactly we dont get those as recommendation one example is while searching for a world with little to almost no male population I am able to get mangas like chastity reversed world but not titles like world end harem its only when the title is added to the user prompt that world end harem shows up in the list but that defeats the point of a recommendation engine right 
 
 ## Project Structure
 
