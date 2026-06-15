@@ -6,6 +6,7 @@ import sqlite3
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import os
+import json
 
 from reranking_results import ReRanker
 reranker = ReRanker()
@@ -14,7 +15,7 @@ reranker = ReRanker()
 # Request Schema (format for data to be recieved)
 class RecommendationRequest(BaseModel):
     query: str = Field(..., description="Natural language query")
-    content_type: List[Literal["Anime", "Manga"]]
+    content_type: List[Literal["anime", "manga", "manhwa", "manhua"]]
 
     format: List[str] = []
     
@@ -38,21 +39,20 @@ class RecommendationItem(BaseModel):
     average_score: float | None
     popularity: int | None
     image_url: str | None
-
+    bucket: str | None = None
+    relations_chain: List[str] = []
+    other_relations: List[str] = []
 
 
 # Initializing the app as well as the index and db
 app = FastAPI(title="Anime / Manga Recommendation API")
 EMBEDDING_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-ANIME_INDEX = faiss.read_index("../data/vector_stores/anime_index.faiss")
-MANGA_INDEX = faiss.read_index("../data/vector_stores/manga_index.faiss")
-ANIME_DB = sqlite3.connect("../data/anime.db", check_same_thread=False)
-MANGA_DB = sqlite3.connect("../data/manga.db", check_same_thread=False)
+UNIFIED_INDEX = faiss.read_index("../data/vector_store/unified_index.faiss")
+UNIFIED_DB = sqlite3.connect("../data/recommendations.db", check_same_thread=False)
 
 # check to see if the connections were successful
 print("--- DATA HEALTH CHECK ---")
-print(f"Anime Index Size: {ANIME_INDEX.ntotal} vectors")
-print(f"Manga Index Size: {MANGA_INDEX.ntotal} vectors")
+print(f"Unified Index Size: {UNIFIED_INDEX.ntotal} vectors")
 print("-------------------------")
 
 # Embed the user query in a faiss index compatible format float32
@@ -63,10 +63,12 @@ def embed_query(text: str) -> np.ndarray:
     return vec.reshape(1, -1)
 
 # Fetch the actual name and details from the database corresponding to the faiss index
-def fetch_metadata(ids: List[int], conn: sqlite3.Connection, table: str):
+def fetch_metadata(ids: List[int], conn: sqlite3.Connection, table: str, buckets: List[str]):
     results = {}
     BATCH_SIZE = 900 # sending 900 ids at a time
     cursor = conn.cursor()
+
+    bucket_placeholders = ",".join("?" for _ in buckets)
 
     for i in range(0, len(ids), BATCH_SIZE):
         batch_ids = ids[i : i + BATCH_SIZE]
@@ -76,16 +78,121 @@ def fetch_metadata(ids: List[int], conn: sqlite3.Connection, table: str):
         
         # gets the data we want to display on frontend from the db
         query = f"""
-            SELECT faiss_id, title, description_clean, tags, genres, average_score, popularity, image_url
+            SELECT faiss_id, title, description, tags, genres, average_score, popularity, image_url, bucket, relations, id
             FROM {table}
-            WHERE faiss_id IN ({placeholders})
+            WHERE faiss_id IN ({placeholders}) AND bucket IN ({bucket_placeholders})
         """
         
-        cursor.execute(query, batch_ids)
+        cursor.execute(query, batch_ids + buckets)
         rows = cursor.fetchall()
         for row in rows:
             results[row[0]] = row
     return results
+
+
+# Helpers to resolve relations chain dynamically
+def get_relations_by_id(conn: sqlite3.Connection, media_id: int) -> tuple[str | None, str | None]:
+    cursor = conn.cursor()
+    cursor.execute("SELECT relations, title FROM media WHERE id = ?", (media_id,))
+    row = cursor.fetchone()
+    if row:
+        return row[0], row[1]
+    return None, None
+
+def resolve_chain(conn: sqlite3.Connection, start_id: int, start_title: str) -> tuple[List[str], List[str]]:
+    visited = {start_id}
+    
+    # 1. Traverse prequels (backward)
+    prequels = []
+    curr_id = start_id
+    curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+    
+    for _ in range(10): # limit depth to prevent infinite loops
+        if not curr_relations_str:
+            break
+        try:
+            relations = json.loads(curr_relations_str)
+        except Exception:
+            break
+            
+        prequel_node = None
+        for rel in relations:
+            if rel.get("relationType") == "PREQUEL":
+                node = rel.get("node") or {}
+                p_id = node.get("id")
+                if p_id and p_id not in visited:
+                    prequel_node = node
+                    break
+        
+        if prequel_node:
+            p_id = prequel_node["id"]
+            p_title_block = prequel_node.get("title") or {}
+            p_title = p_title_block.get("english") or p_title_block.get("romaji") or p_title_block.get("native") or "Unknown"
+            prequels.append(p_title)
+            visited.add(p_id)
+            curr_id = p_id
+            curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+        else:
+            break
+            
+    # Reverse prequels to go from oldest to newest
+    prequels.reverse()
+    
+    # 2. Traverse sequels (forward)
+    sequels = []
+    curr_id = start_id
+    curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+    
+    for _ in range(10): # limit depth
+        if not curr_relations_str:
+            break
+        try:
+            relations = json.loads(curr_relations_str)
+        except Exception:
+            break
+            
+        sequel_node = None
+        for rel in relations:
+            if rel.get("relationType") == "SEQUEL":
+                node = rel.get("node") or {}
+                s_id = node.get("id")
+                if s_id and s_id not in visited:
+                    sequel_node = node
+                    break
+                    
+        if sequel_node:
+            s_id = sequel_node["id"]
+            s_title_block = sequel_node.get("title") or {}
+            s_title = s_title_block.get("english") or s_title_block.get("romaji") or s_title_block.get("native") or "Unknown"
+            sequels.append(s_title)
+            visited.add(s_id)
+            curr_id = s_id
+            curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+        else:
+            break
+            
+    # 3. Extract other relations from the recommended item's relations string
+    other_relations = []
+    curr_relations_str, _ = get_relations_by_id(conn, start_id)
+    if curr_relations_str:
+        try:
+            relations = json.loads(curr_relations_str)
+            for rel in relations:
+                rel_type = rel.get("relationType", "")
+                if rel_type not in ("PREQUEL", "SEQUEL"):
+                    node = rel.get("node") or {}
+                    title_block = node.get("title") or {}
+                    title = title_block.get("english") or title_block.get("romaji") or title_block.get("native") or "Unknown"
+                    other_relations.append(f"{rel_type}: {title}")
+        except Exception:
+            pass
+
+    # Build final chain: older prequels -> start_title -> newer sequels
+    relations_chain = []
+    if prequels or sequels:
+        relations_chain = prequels + [start_title] + sequels
+
+    return relations_chain, other_relations
 
 
 # Recommendation Endpoint
@@ -93,29 +200,20 @@ def fetch_metadata(ids: List[int], conn: sqlite3.Connection, table: str):
 def recommend(req: RecommendationRequest):
     query_vec = embed_query(req.query)
     
+    # Map request content types directly to database buckets without any backward compatibility mapping
+    requested_buckets = list(set(req.content_type))
+
+    if not requested_buckets:
+        return []
+
     # -- 1. DEEP SEARCH --
-    all_candidates = []
-    SEARCH_DEPTH = 2000 # get top 2000 from the required index
+    SEARCH_DEPTH = 2000 # get top 2000 from the unified index
+    D, I = UNIFIED_INDEX.search(query_vec, k=SEARCH_DEPTH)
 
-    if "Anime" in req.content_type:
-        # d = distance required to calculate similarity between user promt and description of anime / manga
-        # i = index of the anime / manga in the faiss index to fetch metadata later
-        D, I = ANIME_INDEX.search(query_vec, k=SEARCH_DEPTH)
-        for dist, idx in zip(D[0], I[0]):
-            if idx >= 0: all_candidates.append((dist, int(idx), "Anime"))
-
-    if "Manga" in req.content_type:
-        D, I = MANGA_INDEX.search(query_vec, k=SEARCH_DEPTH)
-        for dist, idx in zip(D[0], I[0]):
-            if idx >= 0: all_candidates.append((dist, int(idx), "Manga"))
-
-    # getting id from candidates and storing in respective lists
-    anime_ids = [c[1] for c in all_candidates if c[2] == "Anime"]
-    manga_ids = [c[1] for c in all_candidates if c[2] == "Manga"]
+    faiss_ids = [int(idx) for idx in I[0] if idx >= 0]
     
-    # fetched data from the db
-    anime_meta = fetch_metadata(anime_ids, ANIME_DB, "anime") if anime_ids else {}
-    manga_meta = fetch_metadata(manga_ids, MANGA_DB, "manga") if manga_ids else {}
+    # Fetch metadata from SQLite database, filtering by the requested buckets
+    meta = fetch_metadata(faiss_ids, UNIFIED_DB, "media", requested_buckets)
 
     # preparing data to be sent to reranker
     reranker_input = []
@@ -127,26 +225,33 @@ def recommend(req: RecommendationRequest):
     hard_tags_set = set(req.hard_limit + req.genre)
     hard_tags_set = {t.strip().lower() for t in hard_tags_set}
     
-
     # combine soft tags with genres and demographic tags, ids without these will get penalized but not filtered out
     soft_tags_set = set(req.soft_limit + req.demographic)
     soft_tags_set = {t.strip().lower() for t in soft_tags_set}
-    
-    
 
-    for dist, faiss_id, c_type in all_candidates:
-        row = anime_meta.get(faiss_id) if c_type == "Anime" else manga_meta.get(faiss_id)
+    for dist, faiss_id in zip(D[0], I[0]):
+        if faiss_id < 0: continue
+        row = meta.get(int(faiss_id))
         if not row: continue
         
-        # the data structure expected by the reranker
+        tags_raw = row[3] or ""
+        genres_raw = row[4] or ""
+        media_id = row[10]
+
+        # Resolve full prequel/sequel relations chain
+        relations_chain, other_relations = resolve_chain(UNIFIED_DB, int(media_id), row[1])
+
         reranker_input.append({
             "title": row[1],
             "description": row[2],
-            "tags": row[3].split(","),
-            "genres": row[4].split(","),
+            "tags": [t.strip() for t in tags_raw.split(",") if t.strip()] if isinstance(tags_raw, str) else [],
+            "genres": [g.strip() for g in genres_raw.split(",") if g.strip()] if isinstance(genres_raw, str) else [],
             "average_score": row[5],
             "popularity": row[6],
             "image_url": row[7],
+            "bucket": row[8],
+            "relations_chain": relations_chain,
+            "other_relations": other_relations,
             "faiss_distance": dist
         })
 
@@ -171,8 +276,11 @@ def recommend(req: RecommendationRequest):
             tags=item['tags'],
             genres=item['genres'],
             average_score=item['average_score'],
-            popularity = item['popularity'],
-            image_url = item.get('image_url')
+            popularity=item['popularity'],
+            image_url=item.get('image_url'),
+            bucket=item.get('bucket'),
+            relations_chain=item.get('relations_chain', []),
+            other_relations=item.get('other_relations', [])
         ))
         
     return final_output

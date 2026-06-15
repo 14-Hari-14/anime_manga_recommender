@@ -39,10 +39,11 @@ def main():
         index=False
     )
     
-    # Create index on faiss_id for fast queries in the backend API
-    print("Creating index on faiss_id...")
+    # Create indices for fast queries in the backend API
+    print("Creating indices on faiss_id and id...")
     cursor = conn.cursor()
     cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_faiss_id ON {TABLE_NAME} (faiss_id)")
+    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_id ON {TABLE_NAME} (id)")
     conn.commit()
     
     # Verify the table exists and count rows
