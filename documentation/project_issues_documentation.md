@@ -48,7 +48,19 @@ The cleanup script `clean_db.py` was deprecated and rendered redundant because:
 
 
 ### Backend Refactoring
-I refactored `backend/main.py` to load a single `unified_index.faiss` and connect to a unified `recommendations.db` (table `media`). I simplified the API inputs and removed the backward-compatibility mappings to enable native granular selections.
+1. I refactored `backend/main.py` to load a single `unified_index.faiss` and connect to a unified `recommendations.db` (table `media`). 
+2. Improved the performance of the backend script by reducing the amount of resolve_chain calls made which inturn reduces the amount of the sqlite db calls made. Follwoing are the results after testing.
+
+| Query | Current Latency | Optimized Latency | Current DB Queries | Optimized DB Queries | Speedup |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| 'Attack on Titan type action dark fantasy' | 8.28 ms | 1.85 ms | 217 | 54 | 4.5x |
+| 'Demon Slayer with beautiful animation' | 7.01 ms | 2.35 ms | 234 | 60 | 3.0x |
+| 'Romance comedy in school' | 2.52 ms | 0.97 ms | 82 | 28 | 2.6x |
+| 'Isekai reincarnation cheat powers' | 5.88 ms | 1.99 ms | 128 | 50 | 3.0x |
+
+Here is the image attached of the dry run of the backend/main.py
+![dryrun_backend](dryrun_backend.png)
+
 
 ### Frontend Upgrades & relations Chain Traversal
 Updated `frontend/main.py` to support granular type filtering (`anime`, `manga`, `manhwa`, `manhua`) and display the format type on each card.
