@@ -82,6 +82,20 @@ with st.sidebar:
     
     st.divider()
     
+    st.subheader("Ratings & Popularity")
+    score_range = st.slider(
+        "Average Score Range",
+        min_value=0,
+        max_value=100,
+        value=(50, 100)
+    )
+    popularity_tier = st.selectbox(
+        "Popularity",
+        ["Any", "Highly Popular (10k+ members)", "Popular (1k+ members)", "Hidden Gems (< 1k members)"]
+    )
+    
+    st.divider()
+    
     st.subheader("Other")
     view_desc = st.multiselect("Viewer Discretion", CONTENT_WARNINGS_CONFIRMED)
     demo = st.multiselect("Demographic", GENDER_SPECIFIC_TAGS)
@@ -124,9 +138,14 @@ def format_relations(relations_chain, other_relations, current_title):
 
 if st.button("Get Recommendations"):
 
-    if not query.strip():
-        st.warning("⚠️ Please enter a description.")
-        st.stop()
+    # Map popularity tier to min/max members
+    min_pop, max_pop = 0, 99999999
+    if popularity_tier == "Highly Popular (10k+ members)":
+        min_pop = 10000
+    elif popularity_tier == "Popular (1k+ members)":
+        min_pop = 1000
+    elif popularity_tier == "Hidden Gems (< 1k members)":
+        max_pop = 999
         
     payload = {
         "query": query,
@@ -138,7 +157,11 @@ if st.button("Get Recommendations"):
         "banned_tags": banned_tags,
         "viewer_descretion": view_desc,
         "demographic": demo,
-        "nsfw_allowed": st.session_state.nsfw_toggle
+        "nsfw_allowed": st.session_state.nsfw_toggle,
+        "min_score": score_range[0],
+        "max_score": score_range[1],
+        "min_popularity": min_pop,
+        "max_popularity": max_pop
     }
 
     with st.spinner("Analyzing vectors & reranking results..."):

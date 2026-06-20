@@ -46,10 +46,33 @@ def main():
     cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_id ON {TABLE_NAME} (id)")
     conn.commit()
     
+    # Create and populate FTS5 virtual table
+    print("Creating and populating FTS5 virtual table 'media_fts' for BM25...")
+    cursor.execute("DROP TABLE IF EXISTS media_fts")
+    cursor.execute("""
+        CREATE VIRTUAL TABLE media_fts USING fts5(
+            id UNINDEXED,
+            title,
+            description,
+            genres,
+            tags,
+            combined_text
+        )
+    """)
+    cursor.execute("""
+        INSERT INTO media_fts(id, title, description, genres, tags, combined_text)
+        SELECT id, title, description, genres, tags, combined_text FROM media
+    """)
+    conn.commit()
+    
     # Verify the table exists and count rows
     cursor.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}")
     row_count = cursor.fetchone()[0]
-    print(f"SUCCESS: Database created at {DB_PATH}. Table '{TABLE_NAME}' has {row_count} rows.")
+    cursor.execute("SELECT COUNT(*) FROM media_fts")
+    fts_count = cursor.fetchone()[0]
+    print(f"SUCCESS: Database created at {DB_PATH}.")
+    print(f"Table '{TABLE_NAME}' has {row_count} rows.")
+    print(f"Virtual FTS5 table 'media_fts' has {fts_count} rows.")
     
     conn.close()
 
