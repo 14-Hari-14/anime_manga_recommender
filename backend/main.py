@@ -7,9 +7,12 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import os
 import json
+import time
 
 from reranking_results import ReRanker
 reranker = ReRanker()
+# TODO
+# 1. Remove cache complexity the benefit is rather small
 
 
 # Request Schema (format for data to be recieved)
@@ -65,7 +68,7 @@ def embed_query(text: str) -> np.ndarray:
 # Fetch the actual name and details from the database corresponding to the faiss index
 def fetch_metadata(ids: List[int], conn: sqlite3.Connection, table: str, buckets: List[str]):
     results = {}
-    BATCH_SIZE = 900 # sending 900 ids at a time
+    BATCH_SIZE = 900 # limit is 999 was added if the number of titles requested goes over 999
     cursor = conn.cursor()
 
     bucket_placeholders = ",".join("?" for _ in buckets)
@@ -76,7 +79,7 @@ def fetch_metadata(ids: List[int], conn: sqlite3.Connection, table: str, buckets
         
         placeholders = ",".join("?" for _ in batch_ids)
         
-        # gets the data we want to display on frontend from the db
+        # gets the data we want from db to display on frontend from the db
         query = f"""
             SELECT faiss_id, title, description, tags, genres, average_score, popularity, image_url, bucket, relations, id
             FROM {table}
@@ -99,15 +102,23 @@ def get_relations_by_id(conn: sqlite3.Connection, media_id: int) -> tuple[str | 
         return row[0], row[1]
     return None, None
 
-def resolve_chain(conn: sqlite3.Connection, start_id: int, start_title: str) -> tuple[List[str], List[str]]:
+def resolve_chain(conn: sqlite3.Connection, start_id: int, start_title: str, cache: dict | None = None) -> tuple[List[str], List[str], set]:
     visited = {start_id}
     
-    # 1. Traverse prequels (backward)
+    def get_relations_cached(media_id):
+        if cache is not None and media_id in cache:
+            return cache[media_id]
+        res = get_relations_by_id(conn, media_id)
+        if cache is not None:
+            cache[media_id] = res
+        return res
+    
+    # Traverse prequels (backward)
     prequels = []
     curr_id = start_id
-    curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+    curr_relations_str, _ = get_relations_cached(curr_id)
     
-    for _ in range(10): # limit depth to prevent infinite loops
+    while True: # no need to limit depth using for loop visited will handle circular relation
         if not curr_relations_str:
             break
         try:
@@ -131,19 +142,19 @@ def resolve_chain(conn: sqlite3.Connection, start_id: int, start_title: str) -> 
             prequels.append(p_title)
             visited.add(p_id)
             curr_id = p_id
-            curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+            curr_relations_str, _ = get_relations_cached(curr_id)
         else:
             break
             
     # Reverse prequels to go from oldest to newest
     prequels.reverse()
     
-    # 2. Traverse sequels (forward)
+    # Traverse sequels (forward)
     sequels = []
     curr_id = start_id
-    curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+    curr_relations_str, _ = get_relations_cached(curr_id)
     
-    for _ in range(10): # limit depth
+    while True: 
         if not curr_relations_str:
             break
         try:
@@ -167,13 +178,13 @@ def resolve_chain(conn: sqlite3.Connection, start_id: int, start_title: str) -> 
             sequels.append(s_title)
             visited.add(s_id)
             curr_id = s_id
-            curr_relations_str, _ = get_relations_by_id(conn, curr_id)
+            curr_relations_str, _ = get_relations_cached(curr_id)
         else:
             break
             
-    # 3. Extract other relations from the recommended item's relations string
+    # Extract other relations from the recommended item's relations string
     other_relations = []
-    curr_relations_str, _ = get_relations_by_id(conn, start_id)
+    curr_relations_str, _ = get_relations_cached(start_id)
     if curr_relations_str:
         try:
             relations = json.loads(curr_relations_str)
@@ -192,40 +203,50 @@ def resolve_chain(conn: sqlite3.Connection, start_id: int, start_title: str) -> 
     if prequels or sequels:
         relations_chain = prequels + [start_title] + sequels
 
-    return relations_chain, other_relations
+    return relations_chain, other_relations, visited
+
+
+# Helper to parse tags and genres from SQLite stringified lists safely
+def parse_tags_genres(raw_str) -> List[str]:
+    if not raw_str or not isinstance(raw_str, str):
+        return []
+    cleaned = raw_str.replace("[", "").replace("]", "").replace("'", "").replace('"', "")
+    return [t.strip() for t in cleaned.split(",") if t.strip()]
 
 
 # Recommendation Endpoint
 @app.post("/recommend", response_model=List[RecommendationItem])
 def recommend(req: RecommendationRequest):
-    query_vec = embed_query(req.query)
+    start_time = time.time()
     
-    # Map request content types directly to database buckets without any backward compatibility mapping
+    # 1. Embed query
+    query_start = time.time()
+    query_vec = embed_query(req.query)
+    query_time = time.time() - query_start
+    
     requested_buckets = list(set(req.content_type))
-
     if not requested_buckets:
         return []
 
-    # -- 1. DEEP SEARCH --
-    SEARCH_DEPTH = 2000 # get top 2000 from the unified index
+    # 2. FAISS deep search
+    faiss_start = time.time()
+    SEARCH_DEPTH = 900 # get top 900 from the unified index
     D, I = UNIFIED_INDEX.search(query_vec, k=SEARCH_DEPTH)
+    faiss_time = time.time() - faiss_start
 
+    # 3. SQLite Metadata fetch
+    db_start = time.time()
     faiss_ids = [int(idx) for idx in I[0] if idx >= 0]
-    
-    # Fetch metadata from SQLite database, filtering by the requested buckets
     meta = fetch_metadata(faiss_ids, UNIFIED_DB, "media", requested_buckets)
+    db_time = time.time() - db_start
 
-    # preparing data to be sent to reranker
+    # 4. Reranking preparation and execution
+    rerank_start = time.time()
     reranker_input = []
     
-    # banned tags are must not have sets, ids with these will be filtered out
     banned_tags_set = {t.strip().lower() for t in req.banned_tags}
-    
-    # hard tags are must have, ids without these will be filtered out
     hard_tags_set = set(req.hard_limit + req.genre)
     hard_tags_set = {t.strip().lower() for t in hard_tags_set}
-    
-    # combine soft tags with genres and demographic tags, ids without these will get penalized but not filtered out
     soft_tags_set = set(req.soft_limit + req.demographic)
     soft_tags_set = {t.strip().lower() for t in soft_tags_set}
 
@@ -238,24 +259,19 @@ def recommend(req: RecommendationRequest):
         genres_raw = row[4] or ""
         media_id = row[10]
 
-        # Resolve full prequel/sequel relations chain
-        relations_chain, other_relations = resolve_chain(UNIFIED_DB, int(media_id), row[1])
-
         reranker_input.append({
             "title": row[1],
             "description": row[2],
-            "tags": [t.strip() for t in tags_raw.split(",") if t.strip()] if isinstance(tags_raw, str) else [],
-            "genres": [g.strip() for g in genres_raw.split(",") if g.strip()] if isinstance(genres_raw, str) else [],
+            "tags": parse_tags_genres(tags_raw),
+            "genres": parse_tags_genres(genres_raw),
             "average_score": row[5],
             "popularity": row[6],
             "image_url": row[7],
             "bucket": row[8],
-            "relations_chain": relations_chain,
-            "other_relations": other_relations,
+            "media_id": int(media_id),
             "faiss_distance": dist
         })
 
-    # getting the reranked results (still contains 2000 items but ordered by relevance now)
     ranked_results = reranker.ranker(
         candidates=reranker_input, 
         hard_filters=hard_tags_set, 
@@ -263,15 +279,42 @@ def recommend(req: RecommendationRequest):
         banned_user_filters=banned_tags_set,
         nsfw_allowed=req.nsfw_allowed
     )
-    
-    # filtering out scores with -1 since they are disqualified by hard filters
     valid_results = [r for r in ranked_results if r.get('rerank_score', -1) >= 0]
-    
-    # preparing the final output to be sent to the frontend for display
+    rerank_time = time.time() - rerank_start
+
+    # SRelations traversal and deduplication (only resolved for top deduplicated outputs)
+    dedup_start = time.time()
     final_output = []
-    for item in valid_results[:20]:
+    seen_series = set()
+    seen_media_ids = set()
+    cache = {}
+    
+    for item in valid_results:
+        media_id = item["media_id"]
+        title = item["title"]
+        
+        # Short-circuit if this specific ID has been resolved in a prior chain
+        if media_id in seen_media_ids:
+            continue
+            
+        # Resolve relations chain only for items being evaluated for recommendations
+        relations_chain, other_relations, visited_ids = resolve_chain(UNIFIED_DB, media_id, title, cache)
+        
+        # Determine the series signature (first prequel title if exists, otherwise current title)
+        series_signature = relations_chain[0] if relations_chain else title
+        series_signature_clean = series_signature.lower().strip()
+        
+        if series_signature_clean in seen_series:
+            # Skip this item as we've already recommended a title from this series chain
+            # But track these IDs so we short-circuit future duplicate items of this series
+            seen_media_ids.update(visited_ids)
+            continue
+            
+        seen_series.add(series_signature_clean)
+        seen_media_ids.update(visited_ids)
+        
         final_output.append(RecommendationItem(
-            title=item['title'],
+            title=title,
             description=item['description'],
             tags=item['tags'],
             genres=item['genres'],
@@ -279,8 +322,24 @@ def recommend(req: RecommendationRequest):
             popularity=item['popularity'],
             image_url=item.get('image_url'),
             bucket=item.get('bucket'),
-            relations_chain=item.get('relations_chain', []),
-            other_relations=item.get('other_relations', [])
+            relations_chain=relations_chain,
+            other_relations=other_relations
         ))
         
+        if len(final_output) >= 20:
+            break
+            
+    dedup_time = time.time() - dedup_start
+    total_time = time.time() - start_time
+    
+    # Output telemetry logs
+    print(f"\n--- LATENCY BREAKDOWN ---")
+    print(f"Query Embedding:     {query_time*1000:.2f} ms")
+    print(f"FAISS Search:        {faiss_time*1000:.2f} ms")
+    print(f"SQLite DB Fetch:     {db_time*1000:.2f} ms")
+    print(f"Reranker:            {rerank_time*1000:.2f} ms")
+    print(f"Relations/Deduplication: {dedup_time*1000:.2f} ms")
+    print(f"-------------------------")
+    print(f"Total Latency:       {total_time*1000:.2f} ms\n")
+    
     return final_output
